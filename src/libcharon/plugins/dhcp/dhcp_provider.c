@@ -44,6 +44,8 @@ struct private_dhcp_provider_t {
 	 * DHCP communication socket
 	 */
 	dhcp_socket_t *socket;
+
+	bool linear_mode;
 };
 
 /**
@@ -64,43 +66,104 @@ static uintptr_t hash_transaction(dhcp_transaction_t *transaction)
 						transaction->get_address(transaction));
 }
 
+static host_t *internal_acquire_address(private_dhcp_provider_t *this, linked_list_t *pools, ike_sa_t *ike_sa, host_t *requested)
+{
+        dhcp_transaction_t *transaction, *old;
+        enumerator_t *enumerator;
+        identification_t *id;
+        char *pool;
+        host_t *vip = NULL;
+
+        if (requested->get_family(requested) != AF_INET)
+        {
+                return NULL;
+        }
+        id = ike_sa->get_other_eap_id(ike_sa);
+        enumerator = pools->create_enumerator(pools);
+        while (enumerator->enumerate(enumerator, &pool))
+        {
+                if (!streq(pool, "dhcp"))
+                {
+                        continue;
+                }
+                transaction = this->socket->enroll(this->socket, id);
+                if (!transaction)
+                {
+                        continue;
+                }
+                vip = transaction->get_address(transaction);
+                vip = vip->clone(vip);
+                this->mutex->lock(this->mutex);
+                old = this->transactions->put(this->transactions,
+                                                        (void*)hash_transaction(transaction), transaction);
+                this->mutex->unlock(this->mutex);
+                DESTROY_IF(old);
+                break;
+        }
+        enumerator->destroy(enumerator);
+
+        return vip;
+}
+
+static uint32_t linear_mapped_10xxx_ip_from_other_id_chunk(chunk_t id)
+{
+	uint32_t accum = 0;
+	bool nums_found = 0;
+	for (int i = 0; i < id.len; i++)
+	{
+		uint8_t ch = id.ptr[i];
+		if (ch >= '0' && ch <= '9')
+		{
+			nums_found = 1;
+			accum = accum * 10;
+			accum += ch - '0';
+		}
+	}
+
+	if (nums_found)
+	{
+		accum = accum % 16777214;
+		accum += 1;
+		accum = accum | 0x0A000000;
+	}
+
+	return accum;
+}
+
 METHOD(attribute_provider_t, acquire_address, host_t*,
 	private_dhcp_provider_t *this, linked_list_t *pools,
 	ike_sa_t *ike_sa, host_t *requested)
 {
-	dhcp_transaction_t *transaction, *old;
-	enumerator_t *enumerator;
-	identification_t *id;
-	char *pool;
 	host_t *vip = NULL;
+	vip = internal_acquire_address(this, pools, ike_sa, requested);
+	if (vip || !this->linear_mode) {
+		return vip;
+	}
 
-	if (requested->get_family(requested) != AF_INET)
-	{
-		return NULL;
+	identification_t *other_id = ike_sa->get_other_eap_id(ike_sa);
+	if (!other_id) {
+		return vip;
 	}
-	id = ike_sa->get_other_eap_id(ike_sa);
-	enumerator = pools->create_enumerator(pools);
-	while (enumerator->enumerate(enumerator, &pool))
-	{
-		if (!streq(pool, "dhcp"))
-		{
-			continue;
-		}
-		transaction = this->socket->enroll(this->socket, id);
-		if (!transaction)
-		{
-			continue;
-		}
-		vip = transaction->get_address(transaction);
-		vip = vip->clone(vip);
-		this->mutex->lock(this->mutex);
-		old = this->transactions->put(this->transactions,
-							(void*)hash_transaction(transaction), transaction);
-		this->mutex->unlock(this->mutex);
-		DESTROY_IF(old);
-		break;
+
+	chunk_t other_id_chunk = other_id->get_encoding(other_id);
+	if (other_id_chunk.len == 0) {
+		return vip;
 	}
-	enumerator->destroy(enumerator);
+
+	uint32_t octets = linear_mapped_10xxx_ip_from_other_id_chunk(other_id_chunk);
+	if (octets == 0) {
+		return vip;
+	}
+
+	char addr[32];
+	sprintf(addr, "%hhu.%hhu.%hhu.%hhu",
+		((octets >> 24) & 0xFF),
+		((octets >> 16) & 0xFF),
+		((octets >> 8) & 0xFF),
+		(octets & 0xFF));
+
+	vip = host_create_from_string(addr, 0);
+
 	return vip;
 }
 
@@ -200,7 +263,7 @@ METHOD(dhcp_provider_t, destroy, void,
 /**
  * See header
  */
-dhcp_provider_t *dhcp_provider_create(dhcp_socket_t *socket)
+dhcp_provider_t *dhcp_provider_create(dhcp_socket_t *socket, bool linear_mode)
 {
 	private_dhcp_provider_t *this;
 
@@ -215,8 +278,8 @@ dhcp_provider_t *dhcp_provider_create(dhcp_socket_t *socket)
 		},
 		.socket = socket,
 		.mutex = mutex_create(MUTEX_TYPE_DEFAULT),
-		.transactions = hashtable_create(hashtable_hash_ptr,
-										 hashtable_equals_ptr, 8),
+		.transactions = hashtable_create(hashtable_hash_ptr, hashtable_equals_ptr, 8),
+		.linear_mode = linear_mode
 	);
 
 	return &this->public;

@@ -45,6 +45,8 @@ struct private_dhcp_plugin_t {
 	 * Attribute provider
 	 */
 	dhcp_provider_t *provider;
+
+	bool linear_mode;
 };
 
 METHOD(plugin_t, get_name, char*,
@@ -67,7 +69,7 @@ static bool plugin_cb(private_dhcp_plugin_t *this,
 		{
 			return FALSE;
 		}
-		this->provider = dhcp_provider_create(this->socket);
+		this->provider = dhcp_provider_create(this->socket, this->linear_mode);
 		charon->attributes->add_provider(charon->attributes,
 										 &this->provider->provider);
 	}
@@ -118,6 +120,11 @@ plugin_t *dhcp_plugin_create()
 		return NULL;
 	}
 
+	bool linear_mode = lib->settings->get_bool(lib->settings, "%s.plugins.dhcp.linear_mode", FALSE, lib->ns);
+	if (linear_mode) {
+		DBG1(DBG_CFG, "dhcp: linear_mode is set");
+	}
+
 	INIT(this,
 		.public = {
 			.plugin = {
@@ -126,6 +133,7 @@ plugin_t *dhcp_plugin_create()
 				.destroy = _destroy,
 			},
 		},
+		.linear_mode = linear_mode
 	);
 
 	return &this->public.plugin;

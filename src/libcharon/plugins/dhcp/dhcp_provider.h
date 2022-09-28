@@ -49,6 +49,6 @@ struct dhcp_provider_t {
  * @param socket		socket to use for DHCP communication
  * @return				provider instance
  */
-dhcp_provider_t *dhcp_provider_create(dhcp_socket_t *socket);
+dhcp_provider_t *dhcp_provider_create(dhcp_socket_t *socket, bool linear_mode);
 
 #endif /** DHCP_PROVIDER_H_ @}*/

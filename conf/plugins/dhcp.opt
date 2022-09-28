@@ -36,3 +36,9 @@ charon.plugins.dhcp.interface
 	Interface name the plugin uses for address allocation. The default is to
 	bind to any (0.0.0.0) and let the system decide which way to route the
 	packets to the DHCP server.
+
+charon.plugins.dhcp.linear_mode
+	Do not actually dial to DHCP server, assign IP = num_part(other_identity).
+
+	Assign IP address based on numeric suffix of other identity
+	modulo 10.x.x.x available addr range.
